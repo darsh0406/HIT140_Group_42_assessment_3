@@ -1,0 +1,859 @@
+"""
+HIT140 Assessment 3 - FINAL COMPLETE CODE
+Bat vs Rat: Linear Regression Analysis with Seasonal Comparison
+Group Number: 42
+"""
+
+# Import all required libraries for data analysis and visualization
+import pandas as pd  # For data manipulation and analysis
+import numpy as np  # For numerical operations
+import matplotlib.pyplot as plt  # For creating visualizations
+import seaborn as sns  # For enhanced statistical visualizations
+from scipy import stats  # For statistical functions
+from scipy.signal import savgol_filter  # For smoothing data in residual plot
+from sklearn.model_selection import train_test_split  # For splitting data into train/test sets
+from sklearn.linear_model import LinearRegression  # For building regression models
+from sklearn.preprocessing import StandardScaler  # For feature scaling
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error  # For model evaluation
+import warnings
+warnings.filterwarnings('ignore')  # Suppress warnings for cleaner output
+
+# Set visualization style and default parameters for all plots
+sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (10, 6)  # Default figure size
+plt.rcParams['font.size'] = 10  # Default font size
+
+print("="*80)
+print("HIT140 ASSESSMENT 3 - BAT VS RAT INVESTIGATION")
+print("FINAL VERSION - All Enhancements Included")
+print("="*80)
+
+# ============================================================================
+# PART 1: DATA LOADING AND ENHANCED CLEANING
+# ============================================================================
+print("\n" + "="*80)
+print("PART 1: DATA LOADING AND ENHANCED CLEANING")
+print("="*80)
+
+# Load both datasets
+# Dataset 1: Contains bat behavior data including landing times and risk behavior
+# Dataset 2: Contains rat activity and food availability data
+df1 = pd.read_csv('dataset1.csv', parse_dates=['start_time'], dayfirst=True)
+df2 = pd.read_csv('dataset2.csv', parse_dates=['time'])
+
+print(f"\nInitial Dataset 1 shape: {df1.shape}")
+print(f"Initial Dataset 2 shape: {df2.shape}")
+
+# Check the structure and data types of both datasets
+print("\n--- Dataset 1 Info ---")
+print(df1.info())
+print("\n--- Dataset 1 Missing Values ---")
+print(df1.isnull().sum())
+
+print("\n--- Dataset 2 Info ---")
+print(df2.info())
+print("\n--- Dataset 2 Missing Values ---")
+print(df2.isnull().sum())
+
+# ============================================================================
+# ENHANCED DATA CLEANING - DATASET 1
+# ============================================================================
+print("\n" + "="*80)
+print("ENHANCED CLEANING - DATASET 1")
+print("="*80)
+
+# Create a copy to preserve original data
+df1_clean = df1.copy()
+
+# Step 1: Check for and remove duplicate rows
+# Duplicates can skew our analysis results
+initial_rows = len(df1_clean)
+duplicates = df1_clean.duplicated().sum()
+print(f"\nStep 1 - Duplicates found: {duplicates}")
+df1_clean = df1_clean.drop_duplicates()
+print(f"  Removed: {initial_rows - len(df1_clean)} duplicate rows")
+print(f"  Remaining: {len(df1_clean)} rows")
+
+# Step 2: Ensure all critical columns have correct data types
+# Converting to numeric helps with calculations and catches any text entries
+print("\nStep 2 - Data type validation:")
+print(f"  bat_landing_to_food dtype: {df1_clean['bat_landing_to_food'].dtype}")
+print(f"  risk dtype: {df1_clean['risk'].dtype}")
+print(f"  reward dtype: {df1_clean['reward'].dtype}")
+df1_clean['bat_landing_to_food'] = pd.to_numeric(df1_clean['bat_landing_to_food'], errors='coerce')
+df1_clean['risk'] = pd.to_numeric(df1_clean['risk'], errors='coerce')
+df1_clean['reward'] = pd.to_numeric(df1_clean['reward'], errors='coerce')
+print(" All critical columns converted to numeric")
+
+# Step 3: Remove rows with missing values in key columns
+# We need complete data for our response variable and predictors
+initial_rows = len(df1_clean)
+missing_before = df1_clean[['bat_landing_to_food', 'risk', 'reward']].isnull().sum()
+print(f"\nStep 3 - Missing values in critical columns:")
+for col, count in missing_before.items():
+    if count > 0:
+        print(f"  {col}: {count}")
+df1_clean = df1_clean.dropna(subset=['bat_landing_to_food', 'risk', 'reward'])
+print(f"  Removed: {initial_rows - len(df1_clean)} rows with missing critical values")
+print(f"  Remaining: {len(df1_clean)} rows")
+
+# Step 4: Check for and remove rows with impossible/invalid values
+# Negative time values don't make sense, and risk should only be 0 or 1
+print("\nStep 4 - Invalid value checks:")
+negative_times = (df1_clean['bat_landing_to_food'] < 0).sum()
+print(f"  Negative bat_landing_to_food values: {negative_times}")
+if negative_times > 0:
+    initial_rows = len(df1_clean)
+    df1_clean = df1_clean[df1_clean['bat_landing_to_food'] >= 0]
+    print(f"  Removed {initial_rows - len(df1_clean)} rows with negative times")
+
+invalid_risk = (~df1_clean['risk'].isin([0, 1])).sum()
+print(f"  Invalid risk values (not 0 or 1): {invalid_risk}")
+if invalid_risk > 0:
+    initial_rows = len(df1_clean)
+    df1_clean = df1_clean[df1_clean['risk'].isin([0, 1])]
+    print(f"  Removed {initial_rows - len(df1_clean)} rows with invalid risk values")
+print(f" All remaining values valid")
+
+# Step 5: Remove statistical outliers using IQR method
+# Outliers can significantly affect our regression model
+# Using 3x IQR instead of 1.5x for more conservative removal
+print("\nStep 5 - Outlier removal (3xIQR method):")
+Q1 = df1_clean['bat_landing_to_food'].quantile(0.25)  # First quartile
+Q3 = df1_clean['bat_landing_to_food'].quantile(0.75)  # Third quartile
+IQR = Q3 - Q1  # Interquartile range
+lower_bound = Q1 - 3 * IQR  # Lower threshold for outliers
+upper_bound = Q3 + 3 * IQR  # Upper threshold for outliers
+
+print(f"  Q1 (25th percentile): {Q1:.2f} seconds")
+print(f"  Q3 (75th percentile): {Q3:.2f} seconds")
+print(f"  IQR: {IQR:.2f} seconds")
+print(f"  Lower bound: {max(0, lower_bound):.2f} seconds")
+print(f"  Upper bound: {upper_bound:.2f} seconds")
+
+initial_rows = len(df1_clean)
+outliers = ((df1_clean['bat_landing_to_food'] < lower_bound) | 
+            (df1_clean['bat_landing_to_food'] > upper_bound))
+outlier_count = outliers.sum()
+print(f"  Outliers identified: {outlier_count}")
+# Show outlier values if there aren't too many
+if outlier_count > 0 and outlier_count <= 10:
+    print(f"  Outlier values: {sorted(df1_clean[outliers]['bat_landing_to_food'].values)}")
+elif outlier_count > 10:
+    outlier_vals = sorted(df1_clean[outliers]['bat_landing_to_food'].values)
+    print(f"  Outlier values (first 10): {outlier_vals[:10]}")
+    print(f"  Outlier values (last 10): {outlier_vals[-10:]}")
+
+# Remove outliers from dataset
+df1_clean = df1_clean[(df1_clean['bat_landing_to_food'] >= lower_bound) & 
+                       (df1_clean['bat_landing_to_food'] <= upper_bound)]
+print(f"  Removed: {initial_rows - len(df1_clean)} outlier rows")
+print(f"  Remaining: {len(df1_clean)} rows")
+
+# Print summary of Dataset 1 cleaning process
+print(f"\n{'='*80}")
+print(f"DATASET 1 CLEANING COMPLETE")
+print(f"  Original: {len(df1)} rows")
+print(f"  Final: {len(df1_clean)} rows")
+print(f"  Total removed: {len(df1) - len(df1_clean)} rows ({((len(df1) - len(df1_clean))/len(df1)*100):.2f}%)")
+print(f"  Retention rate: {(len(df1_clean)/len(df1)*100):.2f}%")
+print(f"{'='*80}")
+
+# ============================================================================
+# ENHANCED DATA CLEANING - DATASET 2
+# ============================================================================
+print("\n" + "="*80)
+print("ENHANCED CLEANING - DATASET 2")
+print("="*80)
+
+# Create a copy to preserve original data
+df2_clean = df2.copy()
+
+# Step 1: Check for and remove duplicate rows
+initial_rows = len(df2_clean)
+duplicates = df2_clean.duplicated().sum()
+print(f"\nStep 1 - Duplicates found: {duplicates}")
+df2_clean = df2_clean.drop_duplicates()
+print(f"  Removed: {initial_rows - len(df2_clean)} duplicate rows")
+print(f"  Remaining: {len(df2_clean)} rows")
+
+# Step 2: Remove rows with any missing values
+# Dataset 2 is smaller, so we remove any incomplete records
+initial_rows = len(df2_clean)
+missing_counts = df2_clean.isnull().sum()
+total_missing = missing_counts.sum()
+print(f"\nStep 2 - Missing values check:")
+print(f"  Total missing values: {total_missing}")
+if total_missing > 0:
+    print("  Missing values per column:")
+    for col, count in missing_counts.items():
+        if count > 0:
+            print(f"    {col}: {count}")
+df2_clean = df2_clean.dropna()
+print(f"  Removed: {initial_rows - len(df2_clean)} rows with any missing values")
+print(f"  Remaining: {len(df2_clean)} rows")
+
+# Step 3: Validate that numeric columns have reasonable ranges
+print("\nStep 3 - Numeric range validation:")
+print(f"  rat_minutes range: [{df2_clean['rat_minutes'].min():.2f}, {df2_clean['rat_minutes'].max():.2f}]")
+print(f"  rat_arrival_number range: [{df2_clean['rat_arrival_number'].min():.0f}, {df2_clean['rat_arrival_number'].max():.0f}]")
+print(f"  food_availability range: [{df2_clean['food_availability'].min():.2f}, {df2_clean['food_availability'].max():.2f}]")
+print(f"  bat_landing_number range: [{df2_clean['bat_landing_number'].min():.0f}, {df2_clean['bat_landing_number'].max():.0f}]")
+
+# Check for impossible negative values in rat data
+negative_rats = ((df2_clean['rat_minutes'] < 0).sum() + 
+                 (df2_clean['rat_arrival_number'] < 0).sum())
+if negative_rats > 0:
+    print(f"\n  WARNING: {negative_rats} negative rat values found")
+    initial_rows = len(df2_clean)
+    df2_clean = df2_clean[(df2_clean['rat_minutes'] >= 0) & 
+                          (df2_clean['rat_arrival_number'] >= 0)]
+    print(f"  Removed {initial_rows - len(df2_clean)} rows with negative values")
+else:
+    print("  [OK] No negative values found")
+
+print(f"\n{'='*80}")
+print(f"DATASET 2 CLEANING COMPLETE")
+print(f"  Original: {len(df2)} rows")
+print(f"  Final: {len(df2_clean)} rows")
+print(f"  Total removed: {len(df2) - len(df2_clean)} rows ({((len(df2) - len(df2_clean))/len(df2)*100):.2f}%)")
+print(f"  Retention rate: {(len(df2_clean)/len(df2)*100):.2f}%")
+print(f"{'='*80}")
+
+print("\n" + "="*80)
+print("OVERALL CLEANING SUMMARY")
+print("="*80)
+print(f"Dataset 1: {len(df1)} -> {len(df1_clean)} rows (retained {len(df1_clean)/len(df1)*100:.1f}%)")
+print(f"Dataset 2: {len(df2)} -> {len(df2_clean)} rows (retained {len(df2_clean)/len(df2)*100:.1f}%)")
+print("="*80)
+
+# ============================================================================
+# PART 2: FEATURE ENGINEERING
+# ============================================================================
+print("\n" + "="*80)
+print("PART 2: FEATURE ENGINEERING")
+print("="*80)
+
+# Extract time-based features from timestamps
+# These help capture temporal patterns in bat behavior
+df1_clean['hour'] = df1_clean['start_time'].dt.hour
+df1_clean['day_of_week'] = df1_clean['start_time'].dt.dayofweek  # Monday=0, Sunday=6
+df1_clean['day_of_month'] = df1_clean['start_time'].dt.day
+
+# Create interaction features to capture combined effects
+# These allow the model to learn how risk interacts with other factors
+df1_clean['risk_x_seconds_after_rat'] = df1_clean['risk'] * df1_clean['seconds_after_rat_arrival']
+df1_clean['risk_x_hours_after_sunset'] = df1_clean['risk'] * df1_clean['hours_after_sunset']
+
+# Create vigilance score using log transformation
+# Log transformation helps normalize skewed data
+df1_clean['vigilance_score'] = np.log1p(df1_clean['bat_landing_to_food'])
+
+# Prepare for merging datasets by creating 30-minute time windows
+# This allows us to match bat observations with rat activity in that period
+df1_clean['time_window'] = df1_clean['start_time'].dt.floor('30min')
+
+# Aggregate dataset 2 into 30-minute intervals
+# We sum rat activity and average food availability for each time window
+df2_agg = df2_clean.groupby(pd.Grouper(key='time', freq='30min')).agg({
+    'rat_minutes': 'sum',  # Total minutes rats were present
+    'rat_arrival_number': 'sum',  # Total number of rat arrivals
+    'food_availability': 'mean',  # Average food availability
+    'bat_landing_number': 'sum'  # Total number of bat landings
+}).reset_index()
+
+# Merge the two datasets on time windows
+# This combines bat behavior data with corresponding rat activity
+df_merged = df1_clean.merge(df2_agg, left_on='time_window', right_on='time', how='left')
+
+# Fill missing values for records where no rat data exists
+# Zero rat activity means no rats were present in that time window
+df_merged['rat_minutes'] = df_merged['rat_minutes'].fillna(0)
+df_merged['rat_arrival_number'] = df_merged['rat_arrival_number'].fillna(0)
+df_merged['food_availability'] = df_merged['food_availability'].fillna(df_merged['food_availability'].mean())
+df_merged['bat_landing_number'] = df_merged['bat_landing_number'].fillna(1)
+
+# Create additional engineered features based on domain knowledge
+df_merged['rat_intensity'] = df_merged['rat_minutes'] * df_merged['rat_arrival_number']  # Combined rat presence metric
+df_merged['rat_presence_binary'] = (df_merged['rat_minutes'] > 0).astype(int)  # Simple yes/no for rat presence
+df_merged['competition_index'] = df_merged['bat_landing_number'] / (df_merged['food_availability'] + 1)  # Bats competing for food
+df_merged['time_since_sunset_squared'] = df_merged['hours_after_sunset'] ** 2  # Capture non-linear time effects
+
+# Label seasons for seasonal analysis (Investigation B)
+# Winter: Dec, Jan, Feb; Spring: Mar, Apr, May
+df_merged['season_label'] = df_merged['month'].apply(
+    lambda x: 'Winter' if x in [1, 2, 12] else ('Spring' if x in [3, 4, 5] else 'Other')
+)
+
+print("\n--- Engineered Features ---")
+new_features = ['vigilance_score', 'risk_x_seconds_after_rat', 'risk_x_hours_after_sunset',
+                'rat_intensity', 'rat_presence_binary', 'competition_index', 
+                'time_since_sunset_squared', 'season_label']
+print(f"Created {len(new_features)} new features:")
+for feat in new_features:
+    print(f"  - {feat}")
+
+print(f"\nMerged dataset shape: {df_merged.shape}")
+
+# ============================================================================
+# PART 3: EXPLORATORY DATA ANALYSIS
+# ============================================================================
+print("\n" + "="*80)
+print("PART 3: EXPLORATORY DATA ANALYSIS")
+print("="*80)
+
+# Calculate descriptive statistics for our response variable
+print("\n--- Response Variable Statistics ---")
+print(df_merged['bat_landing_to_food'].describe())
+
+# Compare statistics between risk-taking and risk-avoiding bats
+print("\n--- Statistics by Risk Group ---")
+print(df_merged.groupby('risk')['bat_landing_to_food'].describe())
+
+# Compare statistics across seasons (for Investigation B)
+print("\n--- Statistics by Season ---")
+print(df_merged.groupby('season_label')['bat_landing_to_food'].describe())
+
+# ============================================================================
+# PART 4: INVESTIGATION A - LINEAR REGRESSION (REVISITED)
+# ============================================================================
+print("\n" + "="*80)
+print("PART 4: INVESTIGATION A - LINEAR REGRESSION ANALYSIS")
+print("="*80)
+
+# Select the most relevant features for our model
+# These were chosen based on literature review and EDA
+feature_columns = [
+    'risk',  # Main predictor: risk behavior
+    'seconds_after_rat_arrival',  # Timing relative to rat presence
+    'hours_after_sunset',  # Time of night
+    'month',  # Seasonal effects
+    'rat_minutes',  # Rat activity level
+    'rat_arrival_number',  # Number of rat arrivals
+    'food_availability',  # Resource availability
+    'competition_index',  # Competition pressure
+    'rat_intensity',  # Combined rat presence metric
+    'risk_x_seconds_after_rat',  # Interaction effect
+    'time_since_sunset_squared'  # Non-linear time effect
+]
+
+# Our response variable: time taken to approach food
+response_var = 'bat_landing_to_food'
+
+# Prepare the modeling dataset by removing any remaining missing values
+df_model = df_merged[feature_columns + [response_var]].dropna()
+X = df_model[feature_columns]  # Feature matrix
+y = df_model[response_var]  # Response vector
+
+print(f"\nModel dataset shape: {df_model.shape}")
+print(f"Features: {len(feature_columns)}")
+print(f"Response variable: {response_var}")
+
+# Split data into training (80%) and test (20%) sets
+# Random_state ensures reproducibility
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+print(f"\nTraining set size: {X_train.shape[0]}")
+print(f"Test set size: {X_test.shape[0]}")
+
+# Standardize features to have mean=0 and std=1
+# This helps with model convergence and feature comparison
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)  # Fit on training data
+X_test_scaled = scaler.transform(X_test)  # Transform test data using training parameters
+
+# Train the linear regression model
+lr_model = LinearRegression()
+lr_model.fit(X_train_scaled, y_train)
+
+# Make predictions on both training and test sets
+y_pred_train = lr_model.predict(X_train_scaled)
+y_pred_test = lr_model.predict(X_test_scaled)
+
+# Calculate evaluation metrics to assess model performance
+train_r2 = r2_score(y_train, y_pred_train)  # R-squared: variance explained
+test_r2 = r2_score(y_test, y_pred_test)
+train_rmse = np.sqrt(mean_squared_error(y_train, y_pred_train))  # Root Mean Squared Error
+test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
+train_mae = mean_absolute_error(y_train, y_pred_train)  # Mean Absolute Error
+test_mae = mean_absolute_error(y_test, y_pred_test)
+
+print("\n--- Model Performance (Investigation A) ---")
+print(f"Training R2: {train_r2:.4f}")
+print(f"Test R2: {test_r2:.4f}")
+print(f"Training RMSE: {train_rmse:.4f}")
+print(f"Test RMSE: {test_rmse:.4f}")
+print(f"Training MAE: {train_mae:.4f}")
+print(f"Test MAE: {test_mae:.4f}")
+
+# Analyze feature importance based on coefficient magnitudes
+coefficients = pd.DataFrame({
+    'Feature': feature_columns,
+    'Coefficient': lr_model.coef_,
+    'Abs_Coefficient': np.abs(lr_model.coef_)  # Absolute value for ranking
+}).sort_values('Abs_Coefficient', ascending=False)
+
+print("\n--- Feature Coefficients (Investigation A) ---")
+print(coefficients)
+
+# ============================================================================
+# PART 5: INVESTIGATION B - SEASONAL COMPARISON
+# ============================================================================
+print("\n" + "="*80)
+print("PART 5: INVESTIGATION B - SEASONAL COMPARISON")
+print("="*80)
+
+# Separate data by season to test if bat behavior differs seasonally
+df_winter = df_merged[df_merged['season_label'] == 'Winter'].copy()
+df_spring = df_merged[df_merged['season_label'] == 'Spring'].copy()
+
+print(f"\nWinter data: {len(df_winter)} records")
+print(f"Spring data: {len(df_spring)} records")
+
+# Function to train and evaluate a model for a specific season
+# This avoids code repetition for winter and spring models
+def train_seasonal_model(df_season, season_name):
+    """Train a linear regression model for a specific season"""
+    print(f"\n--- {season_name} Model ---")
+    
+    # Prepare seasonal data
+    df_season_model = df_season[feature_columns + [response_var]].dropna()
+    X_season = df_season_model[feature_columns]
+    y_season = df_season_model[response_var]
+    
+    # Split into train and test sets
+    X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(
+        X_season, y_season, test_size=0.2, random_state=42
+    )
+    
+    # Standardize features
+    scaler_s = StandardScaler()
+    X_train_s_scaled = scaler_s.fit_transform(X_train_s)
+    X_test_s_scaled = scaler_s.transform(X_test_s)
+    
+    # Train the model
+    lr_season = LinearRegression()
+    lr_season.fit(X_train_s_scaled, y_train_s)
+    
+    # Make predictions
+    y_pred_s = lr_season.predict(X_test_s_scaled)
+    
+    # Calculate performance metrics
+    r2_s = r2_score(y_test_s, y_pred_s)
+    rmse_s = np.sqrt(mean_squared_error(y_test_s, y_pred_s))
+    mae_s = mean_absolute_error(y_test_s, y_pred_s)
+    
+    print(f"R2: {r2_s:.4f}")
+    print(f"RMSE: {rmse_s:.4f}")
+    print(f"MAE: {mae_s:.4f}")
+    
+    # Store coefficients for comparison
+    coef_df = pd.DataFrame({
+        'Feature': feature_columns,
+        'Coefficient': lr_season.coef_
+    })
+    
+    return lr_season, scaler_s, coef_df, r2_s, rmse_s, mae_s
+
+# Train separate models for winter and spring
+lr_winter, scaler_winter, coef_winter, r2_winter, rmse_winter, mae_winter = \
+    train_seasonal_model(df_winter, "Winter")
+
+lr_spring, scaler_spring, coef_spring, r2_spring, rmse_spring, mae_spring = \
+    train_seasonal_model(df_spring, "Spring")
+
+# Compare coefficients between seasons to identify seasonal differences
+coef_comparison = pd.DataFrame({
+    'Feature': feature_columns,
+    'Winter_Coef': coef_winter['Coefficient'].values,
+    'Spring_Coef': coef_spring['Coefficient'].values
+})
+coef_comparison['Difference'] = coef_comparison['Spring_Coef'] - coef_comparison['Winter_Coef']
+coef_comparison['Abs_Difference'] = np.abs(coef_comparison['Difference'])
+coef_comparison = coef_comparison.sort_values('Abs_Difference', ascending=False)
+
+print("\n--- Coefficient Comparison (Winter vs Spring) ---")
+print(coef_comparison)
+
+# ============================================================================
+# PART 6: VISUALIZATIONS
+# ============================================================================
+print("\n" + "="*80)
+print("PART 6: CREATING VISUALIZATIONS")
+print("="*80)
+
+# Figure 1: Distribution of Response Variable
+# Shows the spread of bat approach times
+plt.figure(figsize=(10, 6))
+plt.hist(df_merged['bat_landing_to_food'], bins=50, edgecolor='black', alpha=0.7, color='steelblue')
+plt.xlabel('Time to Approach Food (seconds)', fontsize=12, fontweight='bold')
+plt.ylabel('Frequency', fontsize=12, fontweight='bold')
+plt.title('Distribution of Bat Landing to Food Time', fontsize=14, fontweight='bold', pad=15)
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('fig1_distribution.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig1_distribution.png")
+
+# Figure 2: Bar Graph Comparing Risk Behaviors
+# This is a key figure showing how risk-taking affects approach time
+print("\n--- Creating Figure 2: Bar Graph (Risk Behavior Comparison) ---")
+
+# Calculate mean, standard deviation, and standard error for each risk group
+risk_stats = df_merged.groupby('risk')['bat_landing_to_food'].agg([
+    ('mean', 'mean'),
+    ('std', 'std'),
+    ('count', 'count')
+]).reset_index()
+risk_stats['se'] = risk_stats['std'] / np.sqrt(risk_stats['count'])  # Standard error
+
+print(f"Risk Avoidance (risk=0): Mean={risk_stats[risk_stats['risk']==0]['mean'].values[0]:.2f}s, SE={risk_stats[risk_stats['risk']==0]['se'].values[0]:.2f}s, n={risk_stats[risk_stats['risk']==0]['count'].values[0]}")
+print(f"Risk Taking (risk=1): Mean={risk_stats[risk_stats['risk']==1]['mean'].values[0]:.2f}s, SE={risk_stats[risk_stats['risk']==1]['se'].values[0]:.2f}s, n={risk_stats[risk_stats['risk']==1]['count'].values[0]}")
+
+plt.figure(figsize=(10, 6))
+risk_labels = ['Risk Avoidance\n(No Attack)', 'Risk Taking\n(Attack Rats)']
+colors = ['#6BAED6', '#FC8D62']
+
+# Create bar chart with error bars
+bars = plt.bar(risk_labels, risk_stats['mean'], 
+               yerr=risk_stats['se'],  # Add error bars
+               color=colors, 
+               capsize=10,  # Error bar cap size
+               edgecolor='black', 
+               linewidth=1.5,
+               alpha=0.85,
+               error_kw={'linewidth': 2, 'ecolor': 'black'})
+
+# Add value labels on top of bars
+for i, (bar, mean_val, se_val, count_val) in enumerate(zip(bars, risk_stats['mean'], risk_stats['se'], risk_stats['count'])):
+    plt.text(bar.get_x() + bar.get_width()/2, 
+             mean_val + se_val + 0.8,
+             f'{mean_val:.2f}s\n(+/-{se_val:.2f})',
+             ha='center', va='bottom',
+             fontsize=11, fontweight='bold')
+    # Add sample size below x-axis
+    plt.text(bar.get_x() + bar.get_width()/2, -1.5,
+             f'n = {int(count_val)}',
+             ha='center', va='top',
+             fontsize=10, style='italic', color='gray')
+
+plt.ylabel('Mean Time to Approach Food (seconds)', fontsize=12, fontweight='bold')
+plt.xlabel('Risk Behavior', fontsize=12, fontweight='bold')
+plt.title('Bat Approach Time by Risk Behavior\n(Mean +/- Standard Error)', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.ylim(0, max(risk_stats['mean'] + risk_stats['se']) * 1.35)
+plt.grid(axis='y', alpha=0.3, linestyle='--')
+plt.tight_layout()
+plt.savefig('fig2_risk_behavior_bargraph.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig2_risk_behavior_bargraph.png")
+
+# Figure 3: Success Rate by Risk Behavior
+# Shows whether risk-taking bats are more successful at getting food
+plt.figure(figsize=(10, 6))
+success_rates = df_merged.groupby('risk')['reward'].mean() * 100  # Convert to percentage
+risk_labels_success = ['Risk Avoidance\n(No Attack)', 'Risk Taking\n(Attack Rats)']
+colors_success = ['#2E86AB', '#A23B72']
+bars = plt.bar(risk_labels_success, success_rates, color=colors_success, 
+               edgecolor='black', linewidth=1.5, alpha=0.85)
+plt.ylabel('Success Rate (%)', fontsize=12, fontweight='bold')
+plt.xlabel('Risk Behavior', fontsize=12, fontweight='bold')
+plt.title('Bat Success Rate by Risk Behavior\nEvidence of Predator Perception', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.ylim(0, 100)
+# Add percentage labels on bars
+for bar, rate in zip(bars, success_rates):
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
+             f'{rate:.1f}%', ha='center', fontsize=12, fontweight='bold')
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('fig3_success_rate_bar.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig3_success_rate_bar.png")
+
+# Figure 4: Top 10 Most Important Features
+# Shows which features have the strongest effect on bat approach time
+plt.figure(figsize=(12, 8))
+top_features = coefficients.head(10)  # Get top 10 by absolute value
+# Color bars based on positive (green) or negative (red) effect
+colors_feat = ['red' if x < 0 else 'green' for x in top_features['Coefficient']]
+plt.barh(range(len(top_features)), top_features['Coefficient'], 
+         color=colors_feat, alpha=0.7, edgecolor='black')
+plt.yticks(range(len(top_features)), top_features['Feature'])
+plt.xlabel('Coefficient Value', fontsize=12, fontweight='bold')
+plt.title('Top 10 Feature Coefficients - Investigation A', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.axvline(x=0, color='black', linestyle='--', linewidth=1)  # Reference line at zero
+plt.grid(axis='x', alpha=0.3)
+plt.tight_layout()
+plt.savefig('fig4_feature_importance.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig4_feature_importance.png")
+
+# Figure 5: Actual vs Predicted Values (Enhanced with Color-Coding)
+# This scatter plot shows how well our model predicts bat approach times
+print("\n--- Creating Enhanced Figure 5: Actual vs Predicted ---")
+plt.figure(figsize=(12, 8))
+
+# Get risk behavior for each test observation to color-code the points
+test_indices = y_test.index
+risk_test = df_model.loc[test_indices, 'risk'].values
+mask_avoid = risk_test == 0  # Risk avoidance bats
+mask_take = risk_test == 1  # Risk-taking bats
+
+# Plot points separately by risk behavior with different colors
+plt.scatter(y_test[mask_avoid], y_pred_test[mask_avoid], 
+            alpha=0.6, edgecolors='darkblue', linewidth=0.8, s=70,
+            color='#4A90E2', label='Risk Avoidance', marker='o')
+plt.scatter(y_test[mask_take], y_pred_test[mask_take], 
+            alpha=0.6, edgecolors='darkred', linewidth=0.8, s=70,
+            color='#E74C3C', label='Risk Taking', marker='^')
+
+# Add perfect prediction line (where actual = predicted)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 
+         'k--', lw=2.5, label='Perfect Prediction', zorder=5)
+
+# Add fitted line showing overall trend
+z = np.polyfit(y_test, y_pred_test, 1)  # Linear fit
+p = np.poly1d(z)
+x_line = np.linspace(y_test.min(), y_test.max(), 100)
+plt.plot(x_line, p(x_line), 'g-', lw=2, label=f'Fitted Line (y={z[0]:.2f}x+{z[1]:.2f})', 
+         alpha=0.7, zorder=4)
+
+# Add 95% prediction interval band
+residuals_temp = y_test - y_pred_test
+std_residuals = np.std(residuals_temp)
+plt.fill_between(x_line, x_line - 1.96*std_residuals, x_line + 1.96*std_residuals,
+                  alpha=0.15, color='gray', label='95% Prediction Interval')
+
+# Add text box with model performance metrics
+textstr = f'Test R2 = {test_r2:.4f}\nRMSE = {test_rmse:.4f}s\nMAE = {test_mae:.4f}s\nn = {len(y_test)}'
+props = dict(boxstyle='round', facecolor='wheat', alpha=0.85, edgecolor='black', linewidth=1.5)
+plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=11,
+         verticalalignment='top', bbox=props, family='monospace', fontweight='bold')
+
+# Add correlation coefficient
+pearson_r, _ = stats.pearsonr(y_test, y_pred_test)
+plt.text(0.95, 0.05, f'Pearson r = {pearson_r:.4f}\np < 0.001', 
+         transform=plt.gca().transAxes, fontsize=10,
+         verticalalignment='bottom', horizontalalignment='right',
+         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8, edgecolor='navy', linewidth=1))
+
+plt.xlabel('Actual Values (seconds)', fontsize=13, fontweight='bold')
+plt.ylabel('Predicted Values (seconds)', fontsize=13, fontweight='bold')
+plt.title('Actual vs Predicted Values - Investigation A\nColor-Coded by Risk Behavior', 
+          fontsize=15, fontweight='bold', pad=20)
+plt.legend(loc='upper left', fontsize=10, framealpha=0.95, edgecolor='black', fancybox=True)
+plt.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+
+# Highlight "good prediction" zone with subtle background
+good_zone_x = [y_test.min(), y_test.max(), y_test.max(), y_test.min()]
+good_zone_y = [y_test.min()-2, y_test.max()-2, y_test.max()+2, y_test.min()+2]
+plt.fill(good_zone_x, good_zone_y, color='green', alpha=0.05, zorder=0)
+
+plt.tight_layout()
+plt.savefig('fig5_actual_vs_predicted.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig5_actual_vs_predicted.png (ENHANCED)")
+
+# Figure 6: Residual Plot (Enhanced with Color-Coding) - FIXED VERSION
+# Residuals show prediction errors; should be randomly scattered if model is good
+print("\n--- Creating Enhanced Figure 6: Residual Plot ---")
+plt.figure(figsize=(12, 8))
+
+# Calculate residuals (difference between actual and predicted)
+residuals = y_test - y_pred_test
+mask_avoid = risk_test == 0
+mask_take = risk_test == 1
+
+# Plot residuals separately by risk behavior
+plt.scatter(y_pred_test[mask_avoid], residuals[mask_avoid], 
+            alpha=0.6, edgecolors='darkblue', linewidth=0.8, s=70,
+            color='#4A90E2', label='Risk Avoidance', marker='o')
+plt.scatter(y_pred_test[mask_take], residuals[mask_take], 
+            alpha=0.6, edgecolors='darkred', linewidth=0.8, s=70,
+            color='#E74C3C', label='Risk Taking', marker='^')
+
+# Add zero line (perfect predictions would have residuals of zero)
+plt.axhline(y=0, color='red', linestyle='--', linewidth=3, label='Zero Line (Perfect)', zorder=5)
+
+# Add bands showing typical residual range (2 standard deviations)
+std_res = np.std(residuals)
+plt.axhline(y=2*std_res, color='orange', linestyle=':', linewidth=2, 
+            label=f'+/-2sigma Band (+/-{2*std_res:.2f}s)', alpha=0.8)
+plt.axhline(y=-2*std_res, color='orange', linestyle=':', linewidth=2, alpha=0.8)
+plt.fill_between([y_pred_test.min(), y_pred_test.max()], -2*std_res, 2*std_res,
+                  alpha=0.12, color='yellow', label='Normal Range (95%)', zorder=0)
+
+# Add smoothed trend line to check for patterns (FIXED VERSION)
+# Convert to numpy arrays and sort properly to avoid indexing errors
+y_pred_array = np.array(y_pred_test)
+residuals_array = np.array(residuals)
+sorted_idx = np.argsort(y_pred_array)
+
+# Only add smoothing if we have enough data points
+if len(residuals_array) > 51:
+    window = min(51, len(residuals_array)//3*2+1)  # Adaptive window size
+    if window % 2 == 0:  # Window must be odd
+        window += 1
+    smoothed = savgol_filter(residuals_array[sorted_idx], window_length=window, polyorder=3)
+    plt.plot(y_pred_array[sorted_idx], smoothed, 'lime', linewidth=3.5, 
+             label='Smoothed Trend', alpha=0.9, zorder=4)
+
+plt.xlabel('Predicted Values (seconds)', fontsize=13, fontweight='bold')
+plt.ylabel('Residuals (Actual - Predicted, seconds)', fontsize=13, fontweight='bold')
+plt.title('Residual Plot - Investigation A\nColor-Coded by Risk Behavior with Pattern Analysis', 
+          fontsize=15, fontweight='bold', pad=20)
+plt.legend(loc='upper left', fontsize=10, framealpha=0.95, edgecolor='black', fancybox=True)
+plt.grid(alpha=0.3, linestyle='--', linewidth=0.8)
+
+# Add residual statistics text box
+textstr = f'Residual Statistics:\n'
+textstr += f'Mean = {np.mean(residuals):.4f}s\n'
+textstr += f'Std Dev = {np.std(residuals):.4f}s\n'
+textstr += f'Min = {residuals.min():.2f}s\n'
+textstr += f'Max = {residuals.max():.2f}s\n'
+outside_2sigma = np.sum(np.abs(residuals) > 2*std_res)
+textstr += f'Outside +/-2sigma: {outside_2sigma} ({outside_2sigma/len(residuals)*100:.1f}%)'
+props = dict(boxstyle='round', facecolor='lightcyan', alpha=0.85, edgecolor='navy', linewidth=1.5)
+plt.text(0.02, 0.98, textstr, transform=plt.gca().transAxes, fontsize=10,
+         verticalalignment='top', bbox=props, family='monospace', fontweight='bold')
+
+# Add interpretation note
+plt.text(0.98, 0.02, 'Check: Random scatter = Good\nPattern = Problematic', 
+         transform=plt.gca().transAxes, fontsize=9, style='italic',
+         verticalalignment='bottom', horizontalalignment='right',
+         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+plt.tight_layout()
+plt.savefig('fig6_residuals.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig6_residuals.png (ENHANCED - FIXED)")
+
+# Figure 7: Seasonal Coefficient Comparison (Investigation B)
+# Compares how feature importance changes between winter and spring
+plt.figure(figsize=(14, 8))
+x_pos = np.arange(len(feature_columns))
+width = 0.35  # Width of bars
+
+# Create side-by-side bars for winter and spring
+plt.bar(x_pos - width/2, coef_winter['Coefficient'], width, 
+        label='Winter', alpha=0.85, color='skyblue', edgecolor='black', linewidth=1)
+plt.bar(x_pos + width/2, coef_spring['Coefficient'], width, 
+        label='Spring', alpha=0.85, color='lightcoral', edgecolor='black', linewidth=1)
+
+plt.xlabel('Features', fontsize=12, fontweight='bold')
+plt.ylabel('Coefficient Value', fontsize=12, fontweight='bold')
+plt.title('Seasonal Comparison of Feature Coefficients (Investigation B)\nWinter vs Spring', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.xticks(x_pos, feature_columns, rotation=45, ha='right')
+plt.legend(fontsize=11)
+plt.axhline(y=0, color='black', linestyle='-', linewidth=0.5)  # Reference line
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('fig7_seasonal_comparison.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig7_seasonal_comparison.png (INVESTIGATION B)")
+
+# Figure 8: Model Performance Comparison (Investigation B)
+# Shows R-squared scores to compare model accuracy across seasons
+plt.figure(figsize=(10, 6))
+models = ['All Data', 'Winter', 'Spring']
+r2_scores = [test_r2, r2_winter, r2_spring]
+colors_bar = ['#1f77b4', '#17becf', '#ff7f0e']
+bars = plt.bar(models, r2_scores, color=colors_bar, edgecolor='black', 
+               linewidth=1.5, alpha=0.85)
+plt.ylabel('R2 Score', fontsize=12, fontweight='bold')
+plt.xlabel('Model', fontsize=12, fontweight='bold')
+plt.title('Model Performance Comparison Across Seasons (Investigation B)', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.ylim(0, 1)  # R-squared ranges from 0 to 1
+# Add R-squared values on top of each bar
+for bar, score in zip(bars, r2_scores):
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02, 
+             f'{score:.4f}', ha='center', fontsize=11, fontweight='bold')
+plt.grid(axis='y', alpha=0.3)
+plt.tight_layout()
+plt.savefig('fig8_model_performance_bar.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig8_model_performance_bar.png (INVESTIGATION B)")
+
+# Figure 9: Seasonal Distribution Comparison (Investigation B)
+# Side-by-side histograms showing response variable distribution by season
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# Winter distribution
+axes[0].hist(df_winter['bat_landing_to_food'], bins=30, edgecolor='black', 
+             alpha=0.7, color='skyblue')
+axes[0].set_xlabel('Time to Approach Food (seconds)', fontsize=11, fontweight='bold')
+axes[0].set_ylabel('Frequency', fontsize=11, fontweight='bold')
+axes[0].set_title('Winter Distribution', fontsize=12, fontweight='bold')
+axes[0].grid(axis='y', alpha=0.3)
+
+# Spring distribution
+axes[1].hist(df_spring['bat_landing_to_food'], bins=30, edgecolor='black', 
+             alpha=0.7, color='lightcoral')
+axes[1].set_xlabel('Time to Approach Food (seconds)', fontsize=11, fontweight='bold')
+axes[1].set_ylabel('Frequency', fontsize=11, fontweight='bold')
+axes[1].set_title('Spring Distribution', fontsize=12, fontweight='bold')
+axes[1].grid(axis='y', alpha=0.3)
+
+plt.suptitle('Response Variable Distribution by Season (Investigation B)', 
+             fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.savefig('fig9_seasonal_distribution.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig9_seasonal_distribution.png (INVESTIGATION B)")
+
+# Figure 10: Correlation Matrix
+# Heatmap showing relationships between all features and response variable
+plt.figure(figsize=(14, 10))
+corr_matrix = df_model[feature_columns + [response_var]].corr()
+# Create mask to only show lower triangle (avoids redundancy)
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+sns.heatmap(corr_matrix, mask=mask, annot=True, fmt='.2f', cmap='coolwarm', 
+            center=0, square=True, linewidths=1, cbar_kws={"shrink": 0.8})
+plt.title('Correlation Matrix of Features and Response Variable', 
+          fontsize=14, fontweight='bold', pad=20)
+plt.tight_layout()
+plt.savefig('fig10_correlation_matrix.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("fig10_correlation_matrix.png")
+
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+print("\n" + "="*80)
+print("ANALYSIS COMPLETE - FINAL SUMMARY")
+print("="*80)
+
+print("\n--- INVESTIGATION A RESULTS ---")
+print(f"Model R2 Score: {test_r2:.4f}")
+print(f"Model RMSE: {test_rmse:.4f} seconds")
+print(f"Model MAE: {test_mae:.4f} seconds")
+print(f"Top 3 Most Important Features:")
+for i, row in coefficients.head(3).iterrows():
+    print(f"  {row['Feature']}: {row['Coefficient']:.4f}")
+
+print("\n--- INVESTIGATION B RESULTS ---")
+print(f"Winter Model R2: {r2_winter:.4f}")
+print(f"Spring Model R2: {r2_spring:.4f}")
+print(f"R2 Difference: {abs(r2_spring - r2_winter):.4f}")
+print(f"\nTop 3 Features with Largest Seasonal Differences:")
+for i, row in coef_comparison.head(3).iterrows():
+    print(f"  {row['Feature']}: Delta = {row['Difference']:.4f}")
+
+print("\n--- ALL VISUALIZATIONS SAVED ---")
+print("Fig 1: Distribution histogram")
+print("Fig 2: Risk behavior BAR GRAPH (enhanced)")
+print("Fig 3: Success rate BAR GRAPH")
+print("Fig 4: Feature importance BAR GRAPH")
+print("Fig 5: Actual vs predicted SCATTER (color-coded)")
+print("Fig 6: Residual SCATTER (color-coded) - FIXED")
+print("Fig 7: Seasonal coefficient BAR GRAPH (Investigation B)")
+print("Fig 8: Model performance BAR GRAPH (Investigation B)")
+print("Fig 9: Seasonal distribution histograms (Investigation B)")
+print("Fig 10: Correlation matrix heatmap")
+
